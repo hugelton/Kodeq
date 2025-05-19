@@ -329,20 +329,7 @@ public:
  */
 class ObjectFactory {
 public:
-  static BaseObject *createObject(const std::string &type) {
-    if (type == "int") {
-      return new IntObject(0);
-    } else if (type == "seq") {
-      return new SeqObject();
-    } else if (type == "count") {
-      return new CountObject();
-    } else if (type == "binary") {
-      return new BinaryPatternObject(0);
-    }
-    // 将来的に他のタイプを追加
-
-    throw std::runtime_error("Unknown object type: " + type);
-  }
+  static BaseObject *createObject(const std::string &type);
 };
 
 #endif // REELIA_BASE_OBJECT_HPP

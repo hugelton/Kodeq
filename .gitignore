@@ -1,0 +1,7 @@
+*.log
+*.tmp
+/build/
+/dist/
+.DS_Store
+
+reelia_simulator
