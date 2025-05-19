@@ -1,24 +1,34 @@
+#include "environment.hpp"
 #include "parser.hpp"
+#include <chrono>
 #include <cstdlib>
-#include <deque>
-#include <iomanip>
 #include <iostream>
 #include <string>
 #include <termios.h>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
-// Terminal control constants and helper functions for Unix-like systems
+// ターミナル制御のためのユーティリティ関数
 namespace terminal {
-// ANSI escape codes for terminal control
+// ANSI エスケープコード
 const std::string CLEAR_SCREEN = "\033[2J\033[H";
 const std::string CURSOR_HOME = "\033[H";
 const std::string HIDE_CURSOR = "\033[?25l";
 const std::string SHOW_CURSOR = "\033[?25h";
+const std::string RESET_COLOR = "\033[0m";
+const std::string BOLD = "\033[1m";
+const std::string RED = "\033[31m";
+const std::string GREEN = "\033[32m";
+const std::string YELLOW = "\033[33m";
+const std::string BLUE = "\033[34m";
+const std::string MAGENTA = "\033[35m";
+const std::string CYAN = "\033[36m";
 
-// Set terminal to raw mode (no need to press Enter after each keystroke)
+// 元のターミナル設定を保存
 termios original_termios;
 
+// rawモードに設定（キー入力を即時処理するため）
 void enableRawMode() {
   tcgetattr(STDIN_FILENO, &original_termios);
   termios raw = original_termios;
@@ -27,296 +37,246 @@ void enableRawMode() {
   std::cout << HIDE_CURSOR;
 }
 
+// 元のターミナル設定に戻す
 void disableRawMode() {
   tcsetattr(STDIN_FILENO, TCSAFLUSH, &original_termios);
   std::cout << SHOW_CURSOR;
 }
 
-// Read a single character without blocking
-char readChar() {
+// ノンブロッキングでキー入力を取得
+int readKey() {
   char c;
-  read(STDIN_FILENO, &c, 1);
+  int result = read(STDIN_FILENO, &c, 1);
+  if (result < 0) {
+    return -1;
+  }
   return c;
 }
 } // namespace terminal
 
-// Virtual OLED display
-class OLEDDisplay {
+// シミュレータクラス
+class ReeliaSimulator {
 private:
-  static const int DISPLAY_WIDTH = 12;
-  static const int DISPLAY_HEIGHT = 4;
-  std::vector<std::string> buffer;
-  std::deque<std::string> fullContent;
-  int scrollPosition = 0;
-  int cursorX = 0;
-  int cursorY = 0;
+  Environment env;
+  Parser parser;
+
+  // 現在の入力行
   std::string currentLine;
-  bool editMode = false;
 
-public:
-  OLEDDisplay() {
-    // Initialize empty buffer
-    buffer.resize(DISPLAY_HEIGHT, std::string(DISPLAY_WIDTH - 1, ' '));
+  // 入力履歴
+  std::vector<std::string> history;
+  int historyIndex;
 
-    // Initial welcome message
-    fullContent.push_back("KODEQ v1.0");
-    fullContent.push_back("Ready.");
-    fullContent.push_back("");
-    fullContent.push_back("");
+  // 自動的にティックを進めるかどうか
+  bool autoTick;
+  int tickInterval; // ミリ秒
 
-    updateBuffer();
+  // クロック表示
+  void displayClock() {
+    int tick = env.getTickCount();
+    int beat = tick / 4;
+    int subBeat = tick % 4;
+
+    std::cout << terminal::BOLD << terminal::CYAN;
+    std::cout << "Tick: " << tick << " (";
+    std::cout << beat + 1 << "." << subBeat + 1;
+    std::cout << ")" << terminal::RESET_COLOR << std::endl;
   }
 
-  void addLine(const std::string &line) {
-    // Add new content line
-    fullContent.push_back(line);
+  // ヘルプ表示
+  void displayHelp() {
+    std::cout << terminal::BOLD << "REELIA Live Coding Environment"
+              << terminal::RESET_COLOR << std::endl;
+    std::cout << "Commands:" << std::endl;
+    std::cout << "  $var = @class       - Create instance" << std::endl;
+    std::cout << "  $obj.attr = value   - Set attribute" << std::endl;
+    std::cout << "  $var = $obj.attr    - Get attribute" << std::endl;
+    std::cout << "  $obj.method()       - Call method" << std::endl;
+    std::cout << "  cmd1 | cmd2         - Parallel execution" << std::endl;
+    std::cout << std::endl;
+    std::cout << "Keyboard shortcuts:" << std::endl;
+    std::cout << "  Ctrl+T         - Manual tick" << std::endl;
+    std::cout << "  Ctrl+A         - Toggle auto-tick" << std::endl;
+    std::cout << "  Ctrl+S         - Change tick interval" << std::endl;
+    std::cout << "  Ctrl+L         - Clear screen" << std::endl;
+    std::cout << "  Ctrl+H (?)     - Show this help" << std::endl;
+    std::cout << "  Ctrl+D         - Dump variables" << std::endl;
+    std::cout << "  Ctrl+X         - Exit" << std::endl;
+    std::cout << std::endl;
+  }
 
-    // Keep a maximum history (prevent excessive memory use)
-    while (fullContent.size() > 100) {
-      fullContent.pop_front();
+  // 現在の状態表示
+  void displayStatus() {
+    std::cout << terminal::BOLD;
+    std::cout << "Auto-tick: " << (autoTick ? "ON" : "OFF");
+    if (autoTick) {
+      std::cout << " (" << tickInterval << "ms)";
     }
-
-    // Auto-scroll to bottom when new content is added
-    scrollPosition =
-        std::max(0, static_cast<int>(fullContent.size()) - DISPLAY_HEIGHT);
-    updateBuffer();
+    std::cout << terminal::RESET_COLOR << std::endl;
   }
 
-  void scrollUp() {
-    if (scrollPosition > 0) {
-      scrollPosition--;
-      updateBuffer();
-    }
+  // 変数ダンプ
+  void dumpVariables() {
+    std::cout << terminal::BOLD << terminal::YELLOW;
+    std::cout << "Variables:" << terminal::RESET_COLOR << std::endl;
+    env.dumpVariables();
   }
 
-  void scrollDown() {
-    if (scrollPosition <
-        static_cast<int>(fullContent.size()) - DISPLAY_HEIGHT) {
-      scrollPosition++;
-      updateBuffer();
-    }
+  // 画面クリア
+  void clearScreen() {
+    std::cout << terminal::CLEAR_SCREEN;
+    displayStatus();
+    displayClock();
   }
 
-  void startEdit() {
-    editMode = true;
-    currentLine = "";
-    cursorX = 0;
-  }
-
-  void endEdit() { editMode = false; }
-
-  std::string getEditLine() { return currentLine; }
-
-  void handleKeypress(char key) {
-    if (!editMode)
+  // 入力処理
+  void handleInput() {
+    int c = terminal::readKey();
+    if (c == -1)
       return;
 
-    // Handle backspace
-    if (key == 127 || key == 8) {
-      if (cursorX > 0) {
-        currentLine.erase(cursorX - 1, 1);
-        cursorX--;
-      }
-    }
-    // Handle printable characters
-    else if (key >= 32 && key <= 126) {
-      if (cursorX < DISPLAY_WIDTH - 1) {
-        if (cursorX == currentLine.length()) {
-          currentLine += key;
-        } else {
-          currentLine.insert(cursorX, 1, key);
+    // Ctrl+キー
+    if (c < 32) {
+      switch (c) {
+      case 4: // Ctrl+D
+        dumpVariables();
+        break;
+      case 8:   // Backspace
+      case 127: // Delete
+        if (!currentLine.empty()) {
+          currentLine.pop_back();
         }
-        cursorX++;
+        break;
+      case 10: // Enter
+      case 13: // Carriage return
+        if (!currentLine.empty()) {
+          // 履歴に追加
+          history.push_back(currentLine);
+          historyIndex = history.size();
+
+          // コマンド実行
+          std::cout << terminal::GREEN << "> " << currentLine
+                    << terminal::RESET_COLOR << std::endl;
+          parser.parseLine(currentLine);
+          currentLine.clear();
+        }
+        break;
+      case 12: // Ctrl+L
+        clearScreen();
+        break;
+      case 1: // Ctrl+A
+        autoTick = !autoTick;
+        displayStatus();
+        break;
+      case 19: // Ctrl+S
+      {
+        autoTick = false;
+        displayStatus();
+        std::cout << "Enter tick interval (ms): ";
+        std::string input;
+        // rawモードを一時的に解除
+        terminal::disableRawMode();
+        std::getline(std::cin, input);
+        terminal::enableRawMode();
+        try {
+          tickInterval = std::stoi(input);
+          autoTick = true;
+          displayStatus();
+        } catch (...) {
+          std::cout << "Invalid input" << std::endl;
+        }
+      } break;
+      case 20: // Ctrl+T
+        parser.tick();
+        displayClock();
+        break;
+      case 104: // Ctrl+H (修正：値を8から104に変更)
+        displayHelp();
+        break;
+      case 24: // Ctrl+X
+        exit(0);
+        break;
       }
     }
+    // 通常の文字
+    else if (c >= 32 && c < 127) {
+      // '?' キーでもヘルプを表示
+      if (c == 63) {
+        displayHelp();
+      } else {
+        currentLine += static_cast<char>(c);
+      }
+    }
+
+    // 現在の入力行を表示
+    std::cout << "\r" << std::string(80, ' ') << "\r> " << currentLine
+              << std::flush;
   }
 
-  void updateBuffer() {
-    // Clear buffer
-    for (int i = 0; i < DISPLAY_HEIGHT; i++) {
-      buffer[i] = std::string(DISPLAY_WIDTH - 1, ' ');
-    }
-
-    // Fill with visible content
-    for (int i = 0; i < DISPLAY_HEIGHT; i++) {
-      int contentIdx = scrollPosition + i;
-      if (contentIdx < static_cast<int>(fullContent.size())) {
-        std::string line = fullContent[contentIdx];
-        if (line.length() > DISPLAY_WIDTH - 1) {
-          // Truncate and leave space for scroll indicator
-          buffer[i] = line.substr(0, DISPLAY_WIDTH - 1);
-        } else {
-          // Pad with spaces
-          buffer[i] =
-              line + std::string(DISPLAY_WIDTH - 1 - line.length(), ' ');
-        }
-      }
-    }
+public:
+  ReeliaSimulator()
+      : parser(env), historyIndex(0), autoTick(false), tickInterval(250) {
+    // 初期化
   }
 
-  void render() {
-    // Clear screen and position cursor at home
-    std::cout << terminal::CLEAR_SCREEN;
+  void run() {
+    // ターミナル設定
+    terminal::enableRawMode();
 
-    // Draw OLED frame with ASCII characters instead of Unicode box drawing
-    std::cout << "+" << std::string(DISPLAY_WIDTH, '-') << "+\n";
+    // 初期表示
+    clearScreen();
+    displayHelp();
 
-    // Draw content
-    for (int i = 0; i < DISPLAY_HEIGHT; i++) {
-      std::cout << "|" << buffer[i];
+    // 最初のプロンプト
+    std::cout << "> " << std::flush;
 
-      // Show scroll indicators if needed
-      if (i == 0 && scrollPosition > 0) {
-        std::cout << "^";
-      } else if (i == DISPLAY_HEIGHT - 1 &&
-                 scrollPosition + DISPLAY_HEIGHT <
-                     static_cast<int>(fullContent.size())) {
-        std::cout << "v";
-      } else {
-        std::cout << " ";
+    // 前回のティック時間
+    auto lastTickTime = std::chrono::steady_clock::now();
+
+    // メインループ
+    while (true) {
+      // 入力処理
+      handleInput();
+
+      // 自動ティック
+      if (autoTick) {
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           now - lastTickTime)
+                           .count();
+
+        if (elapsed >= tickInterval) {
+          parser.tick();
+          displayClock();
+          lastTickTime = now;
+
+          // 入力行を再表示
+          std::cout << "\r" << std::string(80, ' ') << "\r> " << currentLine
+                    << std::flush;
+        }
       }
 
-      std::cout << "|\n";
+      // CPUの負荷を減らすために少し待機
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-
-    // Draw bottom frame
-    std::cout << "+" << std::string(DISPLAY_WIDTH, '-') << "+\n";
-
-    // Draw edit line if in edit mode
-    if (editMode) {
-      std::string displayLine = currentLine;
-      if (displayLine.length() > DISPLAY_WIDTH - 1) {
-        displayLine = displayLine.substr(0, DISPLAY_WIDTH - 1);
-      } else {
-        displayLine +=
-            std::string(DISPLAY_WIDTH - 1 - displayLine.length(), ' ');
-      }
-
-      std::cout << "> " << displayLine << "\n";
-      // Position cursor
-      std::cout << "\033[A\033[" << cursorX + 2
-                << "G"; // Move up one line and to cursorX+2 column
-    } else {
-      std::cout << "Press 'e' to enter edit mode, q to quit\n";
-    }
-
-    std::cout.flush();
   }
 };
 
-// Handle KODEQ commands and updates
-void processCommand(const std::string &command, KodeqParser &parser,
-                    OLEDDisplay &display) {
-  // Handle special commands
-  if (command == "exit" || command == "quit") {
-    terminal::disableRawMode();
-    exit(0);
-  }
-
-  if (command == "cls" || command == "clear") {
-    // Clear display by adding empty lines
-    for (int i = 0; i < 10; i++) {
-      display.addLine("");
-    }
-    return;
-  }
-
-  if (command == "help") {
-    display.addLine("KODEQ Commands:");
-    display.addLine("$X=VAL - Set var");
-    display.addLine("$X=MODULE - New mod");
-    display.addLine("$X.P=VAL - Set param");
-    display.addLine("tick - Advance");
-    display.addLine("exit - Quit");
-    return;
-  }
-
-  if (command == "vars") {
-    // Capture and display variables
-    // This is simplified - a proper implementation would redirect stdout
-    parser.printVariables();
-    display.addLine("See terminal for variables");
-    return;
-  }
-
-  if (command == "tick" || command == "t") {
-    parser.advanceTick();
-    display.addLine("Tick: " + std::to_string(parser.getTick()));
-    return;
-  }
-
-  // Process normal KODEQ commands
-  display.addLine("> " + command);
-  bool success = parser.parseLine(command);
-
-  if (!success) {
-    display.addLine("Error: Invalid command");
-  }
-}
-
-// Main function
+// メイン関数
 int main() {
-  KodeqParser parser;
-  OLEDDisplay display;
+  std::cout << "Reelia Live Coding Environment starting..." << std::endl;
 
-  // Setup terminal for immediate key input
-  terminal::enableRawMode();
+  // シミュレータの作成と実行
+  ReeliaSimulator simulator;
 
-  // Main application loop
-  bool running = true;
-  bool editing = false;
-
-  while (running) {
-    // Render the current display state
-    display.render();
-
-    // Handle user input
-    char c = terminal::readChar();
-
-    if (editing) {
-      if (c == '\n' || c == '\r') {
-        // Process entered command
-        std::string command = display.getEditLine();
-        display.endEdit();
-        editing = false;
-
-        if (!command.empty()) {
-          processCommand(command, parser, display);
-        }
-      } else if (c == 27) { // ESC key
-        // Cancel edit
-        display.endEdit();
-        editing = false;
-      } else {
-        // Add character to edit line
-        display.handleKeypress(c);
-      }
-    } else {
-      // Not in edit mode
-      switch (c) {
-      case 'q':
-        running = false;
-        break;
-      case 'e':
-        editing = true;
-        display.startEdit();
-        break;
-      case 'k':
-        display.scrollUp();
-        break;
-      case 'j':
-        display.scrollDown();
-        break;
-      case 't':
-        parser.advanceTick();
-        display.addLine("Tick: " + std::to_string(parser.getTick()));
-        break;
-      }
-    }
+  try {
+    simulator.run();
+  } catch (const std::exception &e) {
+    // 例外発生時にターミナル設定を元に戻す
+    terminal::disableRawMode();
+    std::cerr << "Error: " << e.what() << std::endl;
+    return 1;
   }
-
-  // Restore terminal settings
-  terminal::disableRawMode();
 
   return 0;
 }

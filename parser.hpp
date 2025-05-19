@@ -1,77 +1,52 @@
-#ifndef KODEQ_PARSER_HPP
-#define KODEQ_PARSER_HPP
+#ifndef REELIA_PARSER_HPP
+#define REELIA_PARSER_HPP
 
-#include "expression.hpp"
-#include "value.hpp"
-#include <map>
-#include <random> // For random number generation
+#include "base_object.hpp"
+#include "environment.hpp"
+#include <algorithm>
+#include <regex>
+#include <sstream>
 #include <string>
 #include <vector>
 
 /**
- * KODEQ Parser Class
- * Handles the parsing and execution of KODEQ language commands
+ * 新しい構文パーサー
+ * 提案された新構文を解析して実行する
  */
-class KodeqParser {
+class Parser {
 private:
-  // Variable table (A-Z)
-  std::map<char, BaseValue *> variables;
+  // 環境
+  Environment &env;
 
-  // Expression evaluator
-  ExpressionEvaluator *evaluator;
+  // 内部ヘルパー関数
+  std::vector<std::string> tokenizeLine(const std::string &line);
+  std::vector<std::string> splitByPipe(const std::string &line);
+  bool isWhitespace(char c);
+  std::string trim(const std::string &str);
+  bool isBinaryPattern(const std::string &str);
+  int parseBinaryPattern(const std::string &str);
 
-  // Tick counter
-  int tickCounter = 0;
+  // 構文パターン処理
+  bool processClassCreation(const std::string &line);
+  bool processAttributeAccess(const std::string &line);
+  bool processMethodCall(const std::string &line);
+  bool processVariableAssignment(const std::string &line);
+  bool processPipeline(const std::string &line);
 
-  // Random number generator
-  static std::mt19937 rng;
-
-  // Helper functions
-  bool isInteger(const std::string &s);
-  bool isBinaryPattern(const std::string &s);
-  bool isHexPattern(const std::string &s);
-  int parseLiteral(const std::string &s);
-  std::string toUpper(const std::string &s);
-
-  // Command processors
-  bool processConditional(const std::vector<std::string> &tokens);
-  bool processRepeat(const std::vector<std::string> &tokens);
-  bool processFunctionCall(const std::vector<std::string> &tokens);
-  bool processPatternOperation(const std::vector<std::string> &tokens);
+  // 式の評価
+  BaseObject *evaluateExpression(const std::string &expr);
 
 public:
-  KodeqParser();
-  ~KodeqParser();
+  Parser(Environment &environment) : env(environment) {}
 
-  // Module parameter setting
-  bool setModuleParameter(char varName, const std::string &paramName,
-                          int value);
-  // Variable operations
-  void setVariable(char name, BaseValue *value);
-  BaseValue *getVariable(char name);
-
-  // Input processing
+  // 行の解析と実行
   bool parseLine(const std::string &line);
 
-  // Expression evaluation
-  int evaluateExpression(const std::string &expr);
+  // 複数行の解析と実行
+  bool parseMultipleLines(const std::string &code);
 
-  // Random number generation
-  int getRandom(int min, int max);
-
-  // Debugging
-  void printVariables();
-  void inspectVariable(char varName);
-
-  // Run multiple ticks
-  void runTicks(int count);
-
-  // Tick counter operations
-  void advanceTick();
-  int getTick() const { return tickCounter; }
-
-  // Friend class declaration
-  friend class ExpressionEvaluator;
+  // ティック実行
+  void tick() { env.tick(); }
 };
 
-#endif // KODEQ_PARSER_HPP
+#endif // REELIA_PARSER_HPP

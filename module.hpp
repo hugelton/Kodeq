@@ -1,5 +1,5 @@
-#ifndef KODEQ_MODULE_HPP
-#define KODEQ_MODULE_HPP
+#ifndef REELIA_MODULE_HPP
+#define REELIA_MODULE_HPP
 
 #include <map>
 #include <random>
@@ -8,7 +8,7 @@
 
 /**
  * Base Module class
- * Provides the interface for all KODEQ modules
+ * Provides the interface for all REELIA modules
  */
 class Module {
 public:
@@ -219,4 +219,4 @@ public:
   static Module *createModule(const std::string &type);
 };
 
-#endif // KODEQ_MODULE_HPP
+#endif // REELIA_MODULE_HPP

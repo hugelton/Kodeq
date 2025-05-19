@@ -1,565 +1,463 @@
 #include "parser.hpp"
-#include <algorithm>
 #include <iostream>
-#include <sstream>
 
-// Initialize static random number generator
-std::mt19937 KodeqParser::rng(std::random_device{}());
-
-KodeqParser::KodeqParser() {
-  // Initialize expression evaluator
-  evaluator = new ExpressionEvaluator(*this);
-}
-
-KodeqParser::~KodeqParser() {
-  // Free memory
-  for (auto &pair : variables) {
-    delete pair.second;
-  }
-  variables.clear();
-
-  // Free expression evaluator
-  delete evaluator;
-}
-
-bool KodeqParser::isInteger(const std::string &s) {
-  if (s.empty())
-    return false;
-
-  size_t start = 0;
-  if (s[0] == '-') {
-    start = 1;
-    if (s.length() == 1)
-      return false;
-  }
-
-  for (size_t i = start; i < s.length(); ++i) {
-    if (!std::isdigit(s[i]))
-      return false;
-  }
-
-  return true;
-}
-
-bool KodeqParser::isBinaryPattern(const std::string &s) {
-  if (s.size() < 2 || s[0] != '#')
-    return false;
-
-  for (size_t i = 1; i < s.length(); ++i) {
-    if (s[i] != '0' && s[i] != '1')
-      return false;
-  }
-
-  return true;
-}
-
-bool KodeqParser::isHexPattern(const std::string &s) {
-  if (s.size() < 2 || s[0] != 'X')
-    return false;
-
-  for (size_t i = 1; i < s.length(); ++i) {
-    if (!std::isxdigit(s[i]))
-      return false;
-  }
-
-  return true;
-}
-
-int KodeqParser::parseLiteral(const std::string &s) {
-  if (isInteger(s)) {
-    return std::stoi(s);
-  } else if (isBinaryPattern(s)) {
-    // Binary pattern (#10110)
-    std::string binStr = s.substr(1); // Remove '#'
-    return std::stoi(binStr, nullptr, 2);
-  } else if (isHexPattern(s)) {
-    // Hexadecimal pattern (XFF)
-    std::string hexStr = s.substr(1); // Remove 'X'
-    return std::stoi(hexStr, nullptr, 16);
-  }
-
-  // Default return 0 for other formats
-  return 0;
-}
-
-std::string KodeqParser::toUpper(const std::string &s) {
-  std::string result = s;
-  std::transform(result.begin(), result.end(), result.begin(),
-                 [](unsigned char c) { return std::toupper(c); });
-  return result;
-}
-
-void KodeqParser::setVariable(char name, BaseValue *value) {
-  // Free existing value
-  auto it = variables.find(name);
-  if (it != variables.end()) {
-    delete it->second;
-  }
-
-  // Set new value
-  variables[name] = value;
-}
-
-BaseValue *KodeqParser::getVariable(char name) {
-  auto it = variables.find(name);
-  if (it != variables.end()) {
-    return it->second;
-  }
-  return nullptr;
-}
-
-int KodeqParser::evaluateExpression(const std::string &expr) {
-  return evaluator->evaluate(expr);
-}
-
-bool KodeqParser::processConditional(const std::vector<std::string> &tokens) {
-  // Format: IF expr THEN command
-  if (tokens.size() < 4 || tokens[0] != "IF" ||
-      std::find(tokens.begin(), tokens.end(), "THEN") == tokens.end()) {
-    return false;
-  }
-
-  // Find the position of "THEN"
-  auto thenPos = std::find(tokens.begin(), tokens.end(), "THEN");
-  size_t thenIndex = std::distance(tokens.begin(), thenPos);
-
-  // Extract condition expression
-  std::string condition;
-  for (size_t i = 1; i < thenIndex; ++i) {
-    if (i > 1)
-      condition += " ";
-    condition += tokens[i];
-  }
-
-  // Evaluate the condition
-  int result = evaluateExpression(condition);
-
-  // If condition is true (non-zero), execute the command after "THEN"
-  if (result != 0) {
-    // Reconstruct the command after THEN
-    std::string command;
-    for (size_t i = thenIndex + 1; i < tokens.size(); ++i) {
-      if (i > thenIndex + 1)
-        command += " ";
-      command += tokens[i];
-    }
-
-    // Execute the command
-    return parseLine(command);
-  }
-
-  return true;
-}
-
-bool KodeqParser::processRepeat(const std::vector<std::string> &tokens) {
-  // Format: REPEAT expr DO command
-  if (tokens.size() < 4 || tokens[0] != "REPEAT" ||
-      std::find(tokens.begin(), tokens.end(), "DO") == tokens.end()) {
-    return false;
-  }
-
-  // Find the position of "DO"
-  auto doPos = std::find(tokens.begin(), tokens.end(), "DO");
-  size_t doIndex = std::distance(tokens.begin(), doPos);
-
-  // Extract count expression
-  std::string countExpr;
-  for (size_t i = 1; i < doIndex; ++i) {
-    if (i > 1)
-      countExpr += " ";
-    countExpr += tokens[i];
-  }
-
-  // Evaluate the count
-  int count = evaluateExpression(countExpr);
-
-  // Reconstruct the command after DO
-  std::string command;
-  for (size_t i = doIndex + 1; i < tokens.size(); ++i) {
-    if (i > doIndex + 1)
-      command += " ";
-    command += tokens[i];
-  }
-
-  // Execute the command count times
-  bool success = true;
-  for (int i = 0; i < count && success; ++i) {
-    success = parseLine(command);
-  }
-
-  return success;
-}
-
-int KodeqParser::getRandom(int min, int max) {
-  std::uniform_int_distribution<int> dist(min, max);
-  return dist(rng);
-}
-
-bool KodeqParser::processFunctionCall(const std::vector<std::string> &tokens) {
-  if (tokens.size() >= 1) {
-    // RND(min, max) function
-    if (tokens[0].substr(0, 4) == "RND(" && tokens[0].back() == ')') {
-      // Parse parameters
-      std::string params = tokens[0].substr(4, tokens[0].length() - 5);
-      std::istringstream paramStream(params);
-      std::string minStr, maxStr;
-      std::getline(paramStream, minStr, ',');
-      std::getline(paramStream, maxStr);
-
-      try {
-        int min = std::stoi(minStr);
-        int max = std::stoi(maxStr);
-        int result = getRandom(min, max);
-
-        // Create a temporary variable with the result
-        setVariable('_', new IntValue(result));
-        return true;
-      } catch (const std::exception &e) {
-        std::cout << "Error in RND function: " << e.what() << std::endl;
-        return false;
-      }
-    }
-
-    // Future functions can be added here
-  }
-
-  return false;
-}
-
-// Function to handle pattern operations (reverse, rotate, etc.)
-bool KodeqParser::processPatternOperation(
-    const std::vector<std::string> &tokens) {
-  if (tokens.size() >= 3 && tokens[1] == "=") {
-    // Format: $X = ROTATE($Y, amount)
-    if (tokens[2].substr(0, 7) == "ROTATE(" && tokens[2].back() == ')') {
-      std::string params = tokens[2].substr(7, tokens[2].length() - 8);
-      std::istringstream paramStream(params);
-      std::string sourceVar, amountStr;
-      std::getline(paramStream, sourceVar, ',');
-      std::getline(paramStream, amountStr);
-
-      // Check if sourceVar is a variable reference
-      if (sourceVar.size() == 2 && sourceVar[0] == '$' &&
-          std::isalpha(sourceVar[1])) {
-        char srcName = std::toupper(sourceVar[1]);
-        BaseValue *srcValue = getVariable(srcName);
-
-        if (srcValue && srcValue->getType() == "MODULE" &&
-            static_cast<ModuleValue *>(srcValue)->getModuleName() == "PAT") {
-
-          // Get source pattern value
-          ModuleValue *srcMod = static_cast<ModuleValue *>(srcValue);
-          PatternModule *srcPattern =
-              static_cast<PatternModule *>(srcMod->getModule());
-
-          // Get rotation amount
-          int amount;
-          try {
-            amount = std::stoi(amountStr);
-          } catch (...) {
-            amount = evaluateExpression(amountStr);
-          }
-
-          // Create a new pattern module with rotated value
-          PatternModule *newPattern = new PatternModule();
-
-          // Get original pattern value (assuming pattern is in parameter P)
-          int originalPattern = 0;
-          srcPattern->setParameter("P", originalPattern);
-
-          // Implement bit rotation (8-bit)
-          amount = amount % 8;
-          if (amount < 0)
-            amount += 8;
-          int rotatedPattern = ((originalPattern << amount) |
-                                (originalPattern >> (8 - amount))) &
-                               0xFF;
-
-          newPattern->setParameter("P", rotatedPattern);
-
-          // Parse destination variable
-          if (tokens[0].size() == 2 && tokens[0][0] == '$' &&
-              std::isalpha(tokens[0][1])) {
-            char destName = std::toupper(tokens[0][1]);
-            setVariable(destName, new ModuleValue(newPattern));
-            return true;
-          }
-        }
-      }
-    }
-
-    // Format: $X = REVERSE($Y)
-    if (tokens[2].substr(0, 8) == "REVERSE(" && tokens[2].back() == ')') {
-      std::string sourceVar = tokens[2].substr(8, tokens[2].length() - 9);
-
-      // Check if sourceVar is a variable reference
-      if (sourceVar.size() == 2 && sourceVar[0] == '$' &&
-          std::isalpha(sourceVar[1])) {
-        char srcName = std::toupper(sourceVar[1]);
-        BaseValue *srcValue = getVariable(srcName);
-
-        if (srcValue && srcValue->getType() == "MODULE" &&
-            static_cast<ModuleValue *>(srcValue)->getModuleName() == "PAT") {
-
-          // Get source pattern value
-          ModuleValue *srcMod = static_cast<ModuleValue *>(srcValue);
-          PatternModule *srcPattern =
-              static_cast<PatternModule *>(srcMod->getModule());
-
-          // Create a new pattern module with reversed value
-          PatternModule *newPattern = new PatternModule();
-
-          // Get original pattern value (assuming pattern is in parameter P)
-          int originalPattern = 0;
-          srcPattern->setParameter("P", originalPattern);
-
-          // Implement bit reversal (8-bit)
-          int reversedPattern = 0;
-          for (int i = 0; i < 8; i++) {
-            if ((originalPattern >> i) & 1) {
-              reversedPattern |= (1 << (7 - i));
+// ライン全体をトークンに分割
+std::vector<std::string> Parser::tokenizeLine(const std::string& line) {
+    std::vector<std::string> tokens;
+    std::string token;
+    bool inQuotes = false;
+    
+    for (char c : line) {
+        if (c == '"') {
+            inQuotes = !inQuotes;
+            token += c;
+        } else if (c == ' ' && !inQuotes) {
+            if (!token.empty()) {
+                tokens.push_back(token);
+                token.clear();
             }
-          }
-
-          newPattern->setParameter("P", reversedPattern);
-
-          // Parse destination variable
-          if (tokens[0].size() == 2 && tokens[0][0] == '$' &&
-              std::isalpha(tokens[0][1])) {
-            char destName = std::toupper(tokens[0][1]);
-            setVariable(destName, new ModuleValue(newPattern));
-            return true;
-          }
-        }
-      }
-    }
-  }
-
-  return false;
-}
-
-// Update parseLine to include the new commands
-bool KodeqParser::parseLine(const std::string &line) {
-  // Skip empty lines
-  if (line.empty())
-    return true;
-
-  // Convert input to uppercase
-  std::string upperLine = toUpper(line);
-
-  // Split into tokens
-  std::istringstream iss(upperLine);
-  std::vector<std::string> tokens;
-  std::string token;
-
-  while (iss >> token) {
-    tokens.push_back(token);
-  }
-
-  if (tokens.empty())
-    return true;
-
-  // Check for new command types
-  if (tokens[0] == "IF") {
-    return processConditional(tokens);
-  } else if (tokens[0] == "REPEAT") {
-    return processRepeat(tokens);
-  } else if (tokens[0].substr(0, 4) == "RND(") {
-    return processFunctionCall(tokens);
-  } else if (tokens[0] == "RUN" && tokens.size() > 1) {
-    try {
-      int count = std::stoi(tokens[1]);
-      runTicks(count);
-      return true;
-    } catch (const std::exception &e) {
-      std::cout << "Error in RUN command: " << e.what() << std::endl;
-      return false;
-    }
-  }
-
-  // Try pattern operations
-  if (processPatternOperation(tokens)) {
-    return true;
-  }
-
-  // Module parameter setting: $X.PARAM=VALUE
-  if (tokens.size() >= 3 && tokens[0].size() > 3 && tokens[0][0] == '$' &&
-      std::isalpha(tokens[0][1]) && tokens[0][2] == '.' && tokens[1] == "=") {
-
-    char varName = tokens[0][1];
-    std::string paramName = tokens[0].substr(3); // Extract parameter name part
-
-    // Combine remaining tokens as expression to evaluate
-    std::string exprStr;
-    for (size_t i = 2; i < tokens.size(); ++i) {
-      if (i > 2)
-        exprStr += " ";
-      exprStr += tokens[i];
-    }
-
-    // Evaluate expression
-    try {
-      int paramValue = evaluateExpression(exprStr);
-      return setModuleParameter(varName, paramName, paramValue);
-    } catch (const std::exception &e) {
-      std::cout << "Error evaluating expression: " << e.what() << std::endl;
-      return false;
-    }
-  }
-  // Variable assignment: $X=VALUE
-  else if (tokens.size() >= 3 && tokens[0].size() == 2 && tokens[0][0] == '$' &&
-           std::isalpha(tokens[0][1]) && tokens[1] == "=") {
-
-    char varName = tokens[0][1];
-
-    // Combine remaining tokens as expression to evaluate
-    std::string exprStr;
-    for (size_t i = 2; i < tokens.size(); ++i) {
-      if (i > 2)
-        exprStr += " ";
-      exprStr += tokens[i];
-    }
-
-    // Determine if the expression is a simple value or complex expression
-    if (isInteger(exprStr) || isBinaryPattern(exprStr) ||
-        isHexPattern(exprStr)) {
-      // Simple literal
-      setVariable(varName, new IntValue(parseLiteral(exprStr)));
-      std::cout << "$" << varName << " = " << parseLiteral(exprStr)
-                << " (INTEGER)" << std::endl;
-    } else if (exprStr.size() == 2 && exprStr[0] == '$' &&
-               std::isalpha(exprStr[1])) {
-      // Variable reference
-      char srcVarName = exprStr[1];
-      BaseValue *srcValue = getVariable(srcVarName);
-      if (srcValue) {
-        if (srcValue->getType() == "INTEGER") {
-          setVariable(varName, new IntValue(srcValue->toInt()));
-          std::cout << "$" << varName << " = " << srcValue->toInt()
-                    << " (INTEGER)" << std::endl;
         } else {
-          ModuleValue *modVal = static_cast<ModuleValue *>(srcValue);
-          Module *clonedModule = modVal->getModule()->clone();
-          setVariable(varName, new ModuleValue(clonedModule));
-          std::cout << "$" << varName << " = " << modVal->getModuleName()
-                    << " (MODULE)" << std::endl;
+            token += c;
         }
-      } else {
-        std::cout << "Error: Undefined variable $" << srcVarName << std::endl;
-        return false;
-      }
-    } else if (ModuleFactory::createModule(exprStr) != nullptr) {
-      // Module initialization
-      setVariable(varName, new ModuleValue(exprStr));
-      std::cout << "$" << varName << " = " << exprStr << " (MODULE)"
-                << std::endl;
-    } else {
-      // Complex expression evaluation
-      try {
-        int result = evaluateExpression(exprStr);
-        setVariable(varName, new IntValue(result));
-        std::cout << "$" << varName << " = " << result
-                  << " (INTEGER from expression)" << std::endl;
-      } catch (const std::exception &e) {
-        std::cout << "Error evaluating expression: " << e.what() << std::endl;
-        return false;
-      }
     }
+    
+    if (!token.empty()) {
+        tokens.push_back(token);
+    }
+    
+    return tokens;
+}
 
+// パイプで区切られたコマンドに分割
+std::vector<std::string> Parser::splitByPipe(const std::string& line) {
+    std::vector<std::string> commands;
+    std::string cmd;
+    bool inQuotes = false;
+    
+    for (char c : line) {
+        if (c == '"') {
+            inQuotes = !inQuotes;
+            cmd += c;
+        } else if (c == '|' && !inQuotes) {
+            if (!cmd.empty()) {
+                commands.push_back(trim(cmd));
+                cmd.clear();
+            }
+        } else {
+            cmd += c;
+        }
+    }
+    
+    if (!cmd.empty()) {
+        commands.push_back(trim(cmd));
+    }
+    
+    return commands;
+}
+
+// 空白文字かどうかを判定
+bool Parser::isWhitespace(char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+// 文字列の前後の空白を削除
+std::string Parser::trim(const std::string& str) {
+    size_t first = str.find_first_not_of(" \t\n\r");
+    if (first == std::string::npos) {
+        return "";
+    }
+    size_t last = str.find_last_not_of(" \t\n\r");
+    return str.substr(first, (last - first + 1));
+}
+
+// バイナリパターン判定（例: b10101010）
+bool Parser::isBinaryPattern(const std::string& str) {
+    if (str.size() <= 1 || str[0] != 'b') {
+        return false;
+    }
+    
+    for (size_t i = 1; i < str.size(); i++) {
+        if (str[i] != '0' && str[i] != '1') {
+            return false;
+        }
+    }
+    
     return true;
-  }
-
-  std::cout << "Syntax Error: Invalid command format" << std::endl;
-  return false;
 }
 
-void KodeqParser::printVariables() {
-  std::cout << "Variables:" << std::endl;
-  for (auto &pair : variables) {
-    std::cout << "$" << pair.first << " = ";
-    if (pair.second->getType() == "INTEGER") {
-      IntValue *intVal = static_cast<IntValue *>(pair.second);
-      std::cout << intVal->getValue() << " (INTEGER)" << std::endl;
-    } else {
-      ModuleValue *modVal = static_cast<ModuleValue *>(pair.second);
-      std::cout << modVal->getModuleName() << " (MODULE)" << std::endl;
+// バイナリパターンの解析
+int Parser::parseBinaryPattern(const std::string& str) {
+    if (!isBinaryPattern(str)) {
+        return 0;
     }
-  }
+    
+    int result = 0;
+    for (size_t i = 1; i < str.size(); i++) {
+        result = (result << 1) | (str[i] == '1' ? 1 : 0);
+    }
+    
+    return result;
 }
 
-bool KodeqParser::setModuleParameter(char varName, const std::string &paramName,
-                                     int value) {
-  BaseValue *val = getVariable(varName);
-  if (!val || val->getType() != "MODULE") {
-    std::cout << "Error: $" << varName << " is not a module" << std::endl;
+// クラス生成構文の処理: $seq = @seq
+bool Parser::processClassCreation(const std::string& line) {
+    std::regex pattern(R"(\$(\w+)\s*=\s*@(\w+))");
+    std::smatch matches;
+    
+    if (std::regex_match(line, matches, pattern)) {
+        std::string varName = matches[1].str();
+        std::string className = matches[2].str();
+        
+        try {
+            BaseObject* obj = ObjectFactory::createObject(className);
+            env.setVariable(varName, obj);
+            std::cout << "Created new object $" << varName << " of type " << className << std::endl;
+            return true;
+        } catch (const std::exception& e) {
+            std::cerr << "Error creating object: " << e.what() << std::endl;
+        }
+    }
+    
     return false;
-  }
-
-  ModuleValue *modVal = static_cast<ModuleValue *>(val);
-  modVal->setParameter(paramName, value);
-  std::cout << "$" << varName << "." << paramName << " = " << value
-            << std::endl;
-  return true;
 }
 
-void KodeqParser::inspectVariable(char varName) {
-  BaseValue *val = getVariable(varName);
-  if (!val) {
-    std::cout << "Variable $" << varName << " is not defined." << std::endl;
-    return;
-  }
-
-  std::cout << "Variable $" << varName << ":" << std::endl;
-
-  if (val->getType() == "INTEGER") {
-    IntValue *intVal = static_cast<IntValue *>(val);
-    std::cout << "Type: INTEGER" << std::endl;
-    std::cout << "Value: " << intVal->getValue() << std::endl;
-
-    // Binary representation
-    std::cout << "Binary: ";
-    for (int i = 7; i >= 0; i--) {
-      std::cout << ((intVal->getValue() >> i) & 1);
+// 属性アクセス構文の処理: $obj.attr = value または var = $obj.attr
+bool Parser::processAttributeAccess(const std::string& line) {
+    // 属性設定: $obj.attr = value
+    std::regex setPattern(R"(\$(\w+)\.(\w+)\s*=\s*(.*))");
+    std::smatch setMatches;
+    
+    if (std::regex_match(line, setMatches, setPattern)) {
+        std::string objName = setMatches[1].str();
+        std::string attrName = setMatches[2].str();
+        std::string valueExpr = setMatches[3].str();
+        
+        BaseObject* obj = env.getVariable(objName);
+        if (!obj) {
+            std::cerr << "Error: Object $" << objName << " not found" << std::endl;
+            return false;
+        }
+        
+        // 式を評価して値を取得
+        BaseObject* value = evaluateExpression(valueExpr);
+        if (!value) {
+            std::cerr << "Error evaluating expression: " << valueExpr << std::endl;
+            return false;
+        }
+        
+        try {
+            obj->setAttribute(attrName, value);
+            std::cout << "Set $" << objName << "." << attrName << " = " << value->toString() << std::endl;
+            
+            // 一時オブジェクトを解放
+            delete value;
+            return true;
+        } catch (const std::exception& e) {
+            std::cerr << "Error setting attribute: " << e.what() << std::endl;
+            delete value;
+            return false;
+        }
     }
-    std::cout << std::endl;
-
-    // Hexadecimal representation
-    std::cout << "Hex: 0x" << std::hex << intVal->getValue() << std::dec
-              << std::endl;
-  } else if (val->getType() == "MODULE") {
-    ModuleValue *modVal = static_cast<ModuleValue *>(val);
-    std::cout << "Type: MODULE (" << modVal->getModuleName() << ")"
-              << std::endl;
-    std::cout << "Current Value: " << modVal->toInt() << std::endl;
-    std::cout << modVal->getVisualRepresentation() << std::endl;
-  }
-}
-
-void KodeqParser::advanceTick() {
-  tickCounter = (tickCounter + 1) % 256; // Allow for larger tick cycles
-  std::cout << "Tick: " << tickCounter << std::endl;
-
-  // Update POS parameter for all modules
-  for (auto &pair : variables) {
-    BaseValue *val = pair.second;
-    if (val && val->getType() == "MODULE") {
-      ModuleValue *modVal = static_cast<ModuleValue *>(val);
-      // Update POS parameter if it exists
-      modVal->setParameter("POS", tickCounter);
-
-      // For index-based modules, also update I
-      const std::string modType = modVal->getModuleName();
-      if (modType == "PAT" || modType == "EUC") {
-        modVal->setParameter("I", tickCounter);
-      }
+    
+    // 属性取得: var = $obj.attr
+    std::regex getPattern(R"((\$?\w+)\s*=\s*\$(\w+)\.(\w+))");
+    std::smatch getMatches;
+    
+    if (std::regex_match(line, getMatches, getPattern)) {
+        std::string destName = getMatches[1].str();
+        std::string objName = getMatches[2].str();
+        std::string attrName = getMatches[3].str();
+        
+        // 先頭の$を削除（もしあれば）
+        if (!destName.empty() && destName[0] == '$') {
+            destName = destName.substr(1);
+        }
+        
+        BaseObject* obj = env.getVariable(objName);
+        if (!obj) {
+            std::cerr << "Error: Object $" << objName << " not found" << std::endl;
+            return false;
+        }
+        
+        try {
+            BaseObject* attrValue = obj->getAttribute(attrName);
+            if (attrValue) {
+                env.setVariable(destName, attrValue->clone());
+                std::cout << "Got $" << objName << "." << attrName << " -> $" << destName << std::endl;
+                return true;
+            } else {
+                std::cerr << "Error: Attribute " << attrName << " returned null" << std::endl;
+                return false;
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Error getting attribute: " << e.what() << std::endl;
+            return false;
+        }
     }
-  }
+    
+    return false;
 }
 
-void KodeqParser::runTicks(int count) {
-  for (int i = 0; i < count; i++) {
-    advanceTick();
-  }
-  std::cout << "Ran " << count << " ticks. Current tick: " << tickCounter
-            << std::endl;
+// メソッド呼び出し構文の処理: $obj.method()
+bool Parser::processMethodCall(const std::string& line) {
+    std::regex pattern(R"(\$(\w+)\.(\w+)\(\))");
+    std::smatch matches;
+    
+    if (std::regex_match(line, matches, pattern)) {
+        std::string objName = matches[1].str();
+        std::string methodName = matches[2].str();
+        
+        BaseObject* obj = env.getVariable(objName);
+        if (!obj) {
+            std::cerr << "Error: Object $" << objName << " not found" << std::endl;
+            return false;
+        }
+        
+        // メソッド呼び出しを環境のイベントキューに登録
+        if (methodName == "start") {
+            // Seqオブジェクトのstart()メソッド
+            if (obj->getType() == "seq") {
+                auto event = [objName](Environment& env) {
+                    BaseObject* obj = env.getVariable(objName);
+                    if (obj && obj->getType() == "seq") {
+                        static_cast<SeqObject*>(obj)->start();
+                        std::cout << "Started sequence $" << objName << std::endl;
+                    }
+                };
+                
+                env.queueEvent(event);
+                return true;
+            } 
+            // Countオブジェクトのstart()メソッド
+            else if (obj->getType() == "count") {
+                auto event = [objName](Environment& env) {
+                    BaseObject* obj = env.getVariable(objName);
+                    if (obj && obj->getType() == "count") {
+                        static_cast<CountObject*>(obj)->start();
+                        std::cout << "Started counter $" << objName << std::endl;
+                    }
+                };
+                
+                env.queueEvent(event);
+                return true;
+            }
+        } 
+        else if (methodName == "stop") {
+            // Seqオブジェクトのstop()メソッド
+            if (obj->getType() == "seq") {
+                auto event = [objName](Environment& env) {
+                    BaseObject* obj = env.getVariable(objName);
+                    if (obj && obj->getType() == "seq") {
+                        static_cast<SeqObject*>(obj)->stop();
+                        std::cout << "Stopped sequence $" << objName << std::endl;
+                    }
+                };
+                
+                env.queueEvent(event);
+                return true;
+            } 
+            // Countオブジェクトのstop()メソッド
+            else if (obj->getType() == "count") {
+                auto event = [objName](Environment& env) {
+                    BaseObject* obj = env.getVariable(objName);
+                    if (obj && obj->getType() == "count") {
+                        static_cast<CountObject*>(obj)->stop();
+                        std::cout << "Stopped counter $" << objName << std::endl;
+                    }
+                };
+                
+                env.queueEvent(event);
+                return true;
+            }
+        } 
+        else if (methodName == "reset" && obj->getType() == "count") {
+            // Countオブジェクトのreset()メソッド
+            auto event = [objName](Environment& env) {
+                BaseObject* obj = env.getVariable(objName);
+                if (obj && obj->getType() == "count") {
+                    static_cast<CountObject*>(obj)->reset();
+                    std::cout << "Reset counter $" << objName << std::endl;
+                }
+            };
+            
+            env.queueEvent(event);
+            return true;
+        }
+        
+        std::cerr << "Error: Unknown method or object type: $" << objName << "." << methodName << "()" << std::endl;
+    }
+    
+    return false;
+}
+
+// 変数代入構文の処理: $var = value
+bool Parser::processVariableAssignment(const std::string& line) {
+    // クラス生成と属性アクセスは他のメソッドで処理されるため、
+    // ここでは単純な値の代入のみ処理する
+    std::regex pattern(R"(\$(\w+)\s*=\s*([^@].*))");
+    std::smatch matches;
+    
+    if (std::regex_match(line, matches, pattern)) {
+        std::string varName = matches[1].str();
+        std::string valueExpr = matches[2].str();
+        
+        // 式が他の変数への参照かチェック
+        std::regex varRefPattern(R"(\$(\w+))");
+        std::smatch varRefMatches;
+        
+        if (std::regex_match(valueExpr, varRefMatches, varRefPattern)) {
+            // 他の変数からのコピー
+            std::string srcVarName = varRefMatches[1].str();
+            BaseObject* srcObj = env.getVariable(srcVarName);
+            
+            if (!srcObj) {
+                std::cerr << "Error: Variable $" << srcVarName << " not found" << std::endl;
+                return false;
+            }
+            
+            // クローンを作成して代入
+            env.setVariable(varName, srcObj->clone());
+            std::cout << "Copied $" << srcVarName << " to $" << varName << std::endl;
+            return true;
+        } 
+        // バイナリパターンの処理
+        else if (isBinaryPattern(valueExpr)) {
+            int patternValue = parseBinaryPattern(valueExpr);
+            env.setVariable(varName, new BinaryPatternObject(patternValue));
+            std::cout << "Set $" << varName << " = " << valueExpr << std::endl;
+            return true;
+        }
+        // 数値リテラルの処理
+        else if (std::regex_match(valueExpr, std::regex(R"(\d+)"))) {
+            int intValue = std::stoi(valueExpr);
+            env.setVariable(varName, new IntObject(intValue));
+            std::cout << "Set $" << varName << " = " << intValue << std::endl;
+            return true;
+        }
+        // その他の式の評価
+        else {
+            BaseObject* evalResult = evaluateExpression(valueExpr);
+            if (evalResult) {
+                env.setVariable(varName, evalResult);
+                std::cout << "Set $" << varName << " = " << evalResult->toString() << std::endl;
+                return true;
+            } else {
+                std::cerr << "Error evaluating expression: " << valueExpr << std::endl;
+                return false;
+            }
+        }
+    }
+    
+    return false;
+}
+
+// パイプライン構文の処理: cmd1 | cmd2 | cmd3
+bool Parser::processPipeline(const std::string& line) {
+    auto commands = splitByPipe(line);
+    
+    if (commands.size() <= 1) {
+        // パイプがない場合は他の処理メソッドに委譲
+        return false;
+    }
+    
+    bool success = true;
+    
+    for (const auto& cmd : commands) {
+        // 各コマンドをメソッド呼び出しとして処理
+        if (!processMethodCall(cmd)) {
+            std::cerr << "Error in pipeline command: " << cmd << std::endl;
+            success = false;
+        }
+    }
+    
+    return success;
+}
+
+// 式の評価
+BaseObject* Parser::evaluateExpression(const std::string& expr) {
+    // まずは単純なケースを処理
+    std::string trimmedExpr = trim(expr);
+    
+    // 変数参照
+    std::regex varRefPattern(R"(\$(\w+))");
+    std::smatch varRefMatches;
+    
+    if (std::regex_match(trimmedExpr, varRefMatches, varRefPattern)) {
+        std::string varName = varRefMatches[1].str();
+        BaseObject* obj = env.getVariable(varName);
+        
+        if (!obj) {
+            std::cerr << "Error: Variable $" << varName << " not found" << std::endl;
+            return nullptr;
+        }
+        
+        // 変数の値を複製して返す
+        return obj->clone();
+    }
+    
+    // バイナリパターン
+    if (isBinaryPattern(trimmedExpr)) {
+        int patternValue = parseBinaryPattern(trimmedExpr);
+        return new BinaryPatternObject(patternValue);
+    }
+    
+    // 数値リテラル
+    if (std::regex_match(trimmedExpr, std::regex(R"(\d+)"))) {
+        int intValue = std::stoi(trimmedExpr);
+        return new IntObject(intValue);
+    }
+    
+    // 今後、より複雑な式の評価を追加
+    
+    std::cerr << "Error: Could not evaluate expression: " << expr << std::endl;
+    return nullptr;
+}
+
+// 行の解析と実行
+bool Parser::parseLine(const std::string& line) {
+    // コメント行や空行をスキップ
+    std::string trimmedLine = trim(line);
+    if (trimmedLine.empty() || trimmedLine[0] == '#' || trimmedLine.substr(0, 2) == "//") {
+        return true;
+    }
+    
+    // 各種構文パターンを試す
+    if (processClassCreation(trimmedLine)) {
+        return true;
+    }
+    
+    if (processAttributeAccess(trimmedLine)) {
+        return true;
+    }
+    
+    if (processPipeline(trimmedLine)) {
+        return true;
+    }
+    
+    if (processMethodCall(trimmedLine)) {
+        return true;
+    }
+    
+    if (processVariableAssignment(trimmedLine)) {
+        return true;
+    }
+    
+    // どのパターンにも一致しない
+    std::cerr << "Syntax error: " << line << std::endl;
+    return false;
+}
+
+// 複数行の解析と実行
+bool Parser::parseMultipleLines(const std::string& code) {
+    std::istringstream stream(code);
+    std::string line;
+    bool success = true;
+    
+    while (std::getline(stream, line)) {
+        if (!parseLine(line)) {
+            success = false;
+        }
+    }
+    
+    return success;
 }

@@ -1,18 +1,18 @@
-#ifndef KODEQ_EXPRESSION_HPP
-#define KODEQ_EXPRESSION_HPP
+#ifndef REELIA_EXPRESSION_HPP
+#define REELIA_EXPRESSION_HPP
 
 #include <string>
 
-class KodeqParser; // Forward declaration
+class ReeliaParser; // Forward declaration
 
 /**
- * Expression Evaluator for the KODEQ language
+ * Expression Evaluator for the REELIA language
  * Implements a recursive descent parser that handles mathematical expressions
  * with proper operator precedence.
  */
 class ExpressionEvaluator {
 private:
-  KodeqParser &parser;
+  ReeliaParser &parser;
 
   // Helper functions for expression parsing
   bool isSpace(char c);
@@ -50,10 +50,10 @@ private:
                     const std::string::const_iterator &end);
 
 public:
-  ExpressionEvaluator(KodeqParser &p) : parser(p) {}
+  ExpressionEvaluator(ReeliaParser &p) : parser(p) {}
 
   // Evaluate a complete expression string
   int evaluate(const std::string &expr);
 };
 
-#endif // KODEQ_EXPRESSION_HPP
+#endif // REELIA_EXPRESSION_HPP

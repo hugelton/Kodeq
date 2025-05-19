@@ -1,12 +1,12 @@
-#ifndef KODEQ_VALUE_HPP
-#define KODEQ_VALUE_HPP
+#ifndef REELIA_VALUE_HPP
+#define REELIA_VALUE_HPP
 
 #include "module.hpp"
 #include <string>
 
 /**
  * Base Value class
- * The root class for all value types in KODEQ
+ * The root class for all value types in REELIA
  */
 class BaseValue {
 public:
@@ -17,7 +17,7 @@ public:
 
 /**
  * Integer Value class
- * Represents integer values in KODEQ
+ * Represents integer values in REELIA
  */
 class IntValue : public BaseValue {
 private:
@@ -33,7 +33,7 @@ public:
 
 /**
  * Module Value class
- * References a module instance in KODEQ
+ * References a module instance in REELIA
  */
 class ModuleValue : public BaseValue {
 private:
@@ -71,4 +71,4 @@ public:
   }
 };
 
-#endif // KODEQ_VALUE_HPP
+#endif // REELIA_VALUE_HPP
